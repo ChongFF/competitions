@@ -1,0 +1,145 @@
+--- 
+title: "Kaggle Home Credit Default Risk"
+author: "Fan Fei Chong<br><small>Advanced Analytics<br>Arch Capital Services Inc.</small>"
+date: "<small>`r Sys.Date()`</small>"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+    number_sections: true
+    toc_float: 
+      collapsed: false
+    code_folding: hide
+    theme: cerulean
+css: stewarttoc.css
+description: "some description ..."
+---
+<button id="toc-toggle" type="button" class="btn btn-default btn-xs code-folding-btn pull-right collapsed" onclick="toggletoc()"><span>Outline</span></button>
+
+<script>
+function toggletoc(){
+$("#TOC").toggle();
+}
+</script>
+
+```{r setup,echo=FALSE}
+require(Hmisc)    # provides knitrSet and other functions
+knitrSet(lang='markdown', fig.path='png/', fig.align='left', w=6.5, h=4.5, cache=TRUE)
+# If using blogdown: knitrSet(lang='blogdown')
+
+```
+
+# Read in the data 
+```{r data input, results='asis'}
+library(data.table)
+train_path <- "S:/ACTUARY3/Advanced Analytics/Private/Staff/Chong, Fan Fei/arch_kaggle_data/out/train_weighted.csv"
+train = read.csv(train_path, stringsAsFactors= T, na.strings=".")
+valid_path <- "S:/ACTUARY3/Advanced Analytics/Private/Staff/Chong, Fan Fei/arch_kaggle_data/out/valid_weighted.csv"
+valid = read.csv(valid_path, stringsAsFactors= T, na.strings=".")
+test_path <- "S:/ACTUARY3/Advanced Analytics/Private/Staff/Chong, Fan Fei/arch_kaggle_data/in/application_test.csv"
+test = read.csv(test_path, stringsAsFactors= T)
+
+library(dplyr)
+library(rms)
+library(Hmisc)
+```
+
+# Automatically generate a saturated model (symbolically)
+```{r symbol_form}
+M = train
+
+col_set = M %>% names()
+col_set = col_set[!col_set %in% "TARGET"]
+
+string_formula = "TARGET~"
+for(i in col_set){
+  if(class(M[[i]]) == "numeric"){
+    tmp_component = paste0("+rcs(",i,",3)")
+  }
+  if(class(M[[i]]) != "numeric"){
+    tmp_component = paste0("+",i)
+  }
+  string_formula = paste0(string_formula, tmp_component)  
+}
+requested_formula = as.formula(string_formula)
+requested_formula
+```
+
+# Prelim Model with no missing value imputation
+```{r prelim, results='asis'}
+# would work
+string_formula <- TARGET ~ NAME_CONTRACT_TYPE + CODE_GENDER + FLAG_OWN_CAR + rcs(EXT_SOURCE_1, 4) + rcs(EXT_SOURCE_2, 4) + rcs(EXT_SOURCE_3, 4)
+requested_formula = as.formula(string_formula)
+a_model = lrm(data=M, formula = requested_formula, weight=weight, x=TRUE, y=TRUE)
+library(pander)
+a_model
+```
+A really basic model because of the extensive missing values, If we add an additional variable AMT_CREDIT, there would be so much case deletion that the model won't even be fitted at all. Error Message:
+
+(singular information matrix in lrm.fit (rank= 9 ).  Offending variable(s): EXT_SOURCE_3' EXT_SOURCE_2' EXT_SOURCE_1' )
+
+```{r not_work, results='asis2'}
+# Model that did not work 
+# would not work
+#string_formula <- TARGET ~ NAME_CONTRACT_TYPE + CODE_GENDER + FLAG_OWN_CAR + rcs(EXT_SOURCE_1, 3) + rcs(EXT_SOURCE_2, 3) + rcs(EXT_SOURCE_3, 3)+ 
+#  rcs(AMT_CREDIT, 3)
+# requested_formula = as.formula(string_formula)
+# a_model = lrm(data=M, formula = requested_formula, weight=weight)
+```
+
+## Use the fitted model to score a dataset
+```{r relate}
+valid_scored <- cbind(valid, predict(a_model, valid, se.fit=TRUE))
+test_scored <- cbind(test, predict(a_model, test, se.fit=TRUE))
+head(test_scored$linear.predictors)
+```
+Showing the first 5 predicted log-odds on the test set.
+We see that without imputing the missing values for the predictors, we would have missing in our prediction.
+
+## Diagnostic plots
+### Variable Importance
+```{r var_imp, cap="Variable Importance, in order of Chi-square statistics"}
+plot(anova(a_model))
+```
+
+### Partial Effect Plot
+```{r part_eff}
+dd <- datadist(train); options(datadist='dd')
+ggplot(Predict(a_model),sepdiscrete='vertical',vnames='names')#,
+       #rdata=train,histSpike.opts=list(frac=function(f) .1*
+        #                                 f/max(f)))
+```
+
+### Validation Statistics
+```{r valid}
+validate(a_model, B=100)
+```
+
+### Weighted ROC
+```{r ROC}
+# create artificial scores as random numbers
+# x <- rnorm( 1000 );
+# y <- rnorm( 1000, -1 );
+# create artificial weights
+# x.weights <- runif( 1000 );
+# y.weights <- runif( 1000 );
+# compute ROC curve and area under curve
+# roc <- roc.curve( x, y, x.weights, y.weights, curve = TRUE );
+```
+
+### Calibration Curve
+```{r calibrate}
+plot(calibrate(a_model, B=100))
+```
+We see that only 8719 out of 24575 observations are used. Missing out a lot.
+
+# Handling Missing Values
+## Check out missing patterns
+```{r missing}
+na.patterns <- naclus(train)
+require(rpart)
+who.na <- rpart(is.na(EXT_SOURCE_1) ~ . - EXT_SOURCE_1, data=train,minbucket=15)
+naplot(na.patterns, 'na per var')
+plot(who.na, margin = .1); text(who.na)
+#plot(na.pattterns)
+```
